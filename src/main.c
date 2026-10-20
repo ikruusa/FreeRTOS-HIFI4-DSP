@@ -21,6 +21,7 @@
 extern int linpack_main(void);
 extern int dhry_main(int t);
 extern void coremark_main(void);
+extern void hwlock_test_run(void);
 
 /*
  *  Main task function
@@ -29,6 +30,13 @@ void vTaskMain(void *pvParameters) {
     (void) pvParameters;
     dsp_msgbox_init(NULL);
     vTaskDelay(500);
+
+    /*
+     * TEST IMAGE: run the hardware spinlock contention test against the C906
+     * instead of the benchmarks. hwlock_test_run() never returns.
+     */
+    hwlock_test_run();
+
     dhry_main(10000000);
     linpack_main();
     coremark_main();

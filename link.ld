@@ -13,7 +13,7 @@ MEMORY
   iram0_7_seg :                       	org = 0x004011F8, len = 0x20
   iram0_8_seg :                       	org = 0x00401218, len = 0x20
   iram0_9_seg :                       	org = 0x00401238, len = 0xEDC4
-  ddr1_0_seg :                        	org = 0x40900000, len = 0x400000
+  ddr1_0_seg :                          org = 0x48000000, len = 0x400000
 }
 
 PHDRS
@@ -385,7 +385,14 @@ SECTIONS
   {
     KEEP (*(.debug.xt.callgraph .debug.xt.callgraph.* .gnu.linkonce.xt.callgraph.*))
   }
-   PROVIDE(__stack = 0x37d00000);
-  _heap_sentry = 0x37d00000;
+   /*
+    * The initial stack must live inside the memory reserved for the DSP
+    * (host 0x48000000-0x483fffff). The vendor default of 0x37d00000 is the
+    * DSP's *cached* alias of host 0x47d00000, i.e. plain Linux System RAM -
+    * so Linux overwrites the stack a few seconds into boot and the firmware
+    * dies silently.
+    */
+   PROVIDE(__stack = 0x48380000);
+  _heap_sentry = 0x48380000;
 }
 
