@@ -33,10 +33,10 @@
 
 #define SHARED_BASE        0x483ff000u
 #define SHARED_MAGIC       0x5a5a1234u
-#define SHARED_VERSION     1u
+#define SHARED_VERSION     2u
 
 /* Bump on every firmware change; printed at startup so the console identifies it */
-#define FW_REV             4
+#define FW_REV             6
 
 /* Must match struct shared in drivers/misc/d1-hwlock-test.c */
 struct shared {
@@ -52,6 +52,8 @@ struct shared {
     volatile uint32_t dsp_done;
     volatile uint32_t linux_violations;
     volatile uint32_t dsp_ping;      /* bumped while polling, proves liveness */
+    volatile uint32_t dsp_bench_req; /* 1 = Linux asks for a DSP-side benchmark */
+    volatile uint32_t dsp_bench_done;
 };
 
 static inline uint32_t rd(volatile uint32_t *p) { return *p; }
@@ -61,7 +63,7 @@ static inline void wr(volatile uint32_t *p, uint32_t v) { *p = v; }
 static inline void hw_barrier(void) { __asm__ __volatile__("memw" ::: "memory"); }
 
 /*
- * The whole struct is 48 bytes and SHARED_BASE is 4 KiB aligned, so it lives in
+ * The whole struct is 56 bytes and SHARED_BASE is 4 KiB aligned, so it lives in
  * a single 64-byte D-cache line.
  *
  * _cache_config() asks for XCHAL_CA_BYPASS on 0x40000000+, but evidently that
@@ -149,6 +151,27 @@ static int run_round(volatile struct shared *sh) {
     return 0;
 }
 
+/*
+ * DSP-side benchmark: take and free the lock in a tight loop with Linux idle.
+ * The iteration count arrives in 'target'. It is timed from the Linux side in
+ * wall clock, so nothing has to be assumed about the CCOUNT tick rate.
+ *
+ * Deliberately silent: the DSP's UART is the same ttyS0 Linux prints on, and a
+ * printf here lands in the middle of the kernel's own result lines.
+ */
+static void run_bench(volatile struct shared *sh) {
+    uint32_t max = rd(&sh->target);
+    uint32_t i;
+
+    for (i = 0; i < max; i++) {
+        lock_take();
+        lock_free();
+    }
+
+    wr(&sh->dsp_bench_done, 1);
+    sh_sync_out();
+}
+
 void hwlock_test_run(void) {
     volatile struct shared *sh = (volatile struct shared *) SHARED_BASE;
     char stack_top_marker;   /* its address proves where the stack lives */
@@ -169,6 +192,10 @@ void hwlock_test_run(void) {
     for (;;) {
         while (1) {
             sh_sync_in();
+            if (rd(&sh->magic) == SHARED_MAGIC &&
+                rd(&sh->dsp_bench_req) && !rd(&sh->dsp_bench_done))
+                break;
+
             if (rd(&sh->magic) == SHARED_MAGIC && rd(&sh->go) &&
                 !rd(&sh->dsp_done))
                 break;
@@ -178,6 +205,10 @@ void hwlock_test_run(void) {
             vTaskDelay(10);
         }
 
-        run_round(sh);
+        sh_sync_in();
+        if (rd(&sh->dsp_bench_req) && !rd(&sh->dsp_bench_done))
+            run_bench(sh);
+        else
+            run_round(sh);
     }
 }
