@@ -36,7 +36,7 @@
 #define SHARED_VERSION     2u
 
 /* Bump on every firmware change; printed at startup so the console identifies it */
-#define FW_REV             6
+#define FW_REV             8
 
 /* Must match struct shared in drivers/misc/d1-hwlock-test.c */
 struct shared {
@@ -98,7 +98,7 @@ static inline void lock_free(void) {
 }
 
 static int run_round(volatile struct shared *sh) {
-    uint32_t max, i, trips = 0;
+    uint32_t max, i, trips = 0, executed = 0;
 
     sh_sync_in();
     max = rd(&sh->target);
@@ -128,12 +128,15 @@ static int run_round(volatile struct shared *sh) {
 
         wr(&sh->inside, 0);
 
+        /* This iteration is complete now, whatever happens next */
+        executed = i + 1;
+
         /* Push our updates before dropping the lock */
         sh_sync_out();
         lock_free();
 
         if (!(i & 0x3ff)) {
-            wr(&sh->dsp_iters, i + 1);
+            wr(&sh->dsp_iters, executed);
             sh_sync_out();
 
             sh_sync_in();
@@ -142,12 +145,30 @@ static int run_round(volatile struct shared *sh) {
         }
     }
 
-    wr(&sh->dsp_iters, i);
+    /*
+     * Store the executed count, not the loop variable: on a break the body for
+     * iteration i has already run, so i+1 iterations were completed and the
+     * old code under-reported by one exactly when Linux stopped us early.
+     */
+    wr(&sh->dsp_iters, executed);
     wr(&sh->dsp_violations, trips);
     wr(&sh->dsp_done, 1);
     sh_sync_out();
 
-    printf("hwlock: done, iters=%u trips=%u\n", (unsigned) i, (unsigned) trips);
+    /*
+     * Read back what was just committed, after an invalidate so it comes from
+     * memory rather than from our own cache, and print it. The line goes to the
+     * console next to the results Linux reports, so the log itself shows that
+     * both sides agree on what was published - that is what distinguishes a
+     * real lost update from a bookkeeping error on either side.
+     */
+    sh_sync_in();
+    printf("hwlock: committed iters=%u readback dsp_iters=%u dsp_done=%u counter=%u\n",
+           (unsigned) executed, (unsigned) rd(&sh->dsp_iters),
+           (unsigned) rd(&sh->dsp_done), (unsigned) rd(&sh->counter));
+
+    printf("hwlock: done, iters=%u trips=%u\n", (unsigned) executed,
+           (unsigned) trips);
     return 0;
 }
 
